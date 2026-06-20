@@ -53,6 +53,12 @@ There is no concept of "expired" in this version (see §6), so every code is eit
 known (301) or unknown (404) — no third state.
 
 ### 2.3 Custom Alias Behavior (deliberate design decision)
+- **Aliases are unique system-wide, and the mapping is strictly 1:1 (one code → exactly
+  one URL).** "Already taken" means taken by *any* existing entry, regardless of
+  whether that entry points to the same URL or a different one — there is no scenario
+  in this design where the same alias can be reassigned or shared across multiple
+  URLs. (The reverse is allowed and expected: a single URL can have several different
+  codes pointing to it — see §2.4.)
 - If the caller supplies `alias`:
   - If the alias is **already taken** (by any prior entry, regardless of what URL it
     points to) → `409 Conflict`. The system never silently overwrites or falls back to
