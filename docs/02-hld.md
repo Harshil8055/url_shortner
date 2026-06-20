@@ -110,7 +110,19 @@ InMemoryUrlRepository   (concrete impl: two ConcurrentHashMaps, synchronized wri
 
 \### 2.2 `UrlShortenerService`
 
-The orchestrator. For `POST /shorten`, in order:
+The orchestrator. Returns a `ServiceResult<T>` from every public method — \*\*no
+
+exceptions are thrown for expected failure cases\*\* (invalid URL, invalid alias, alias
+
+conflict, not found). This keeps control flow explicit and linear: the Controller
+
+inspects the result's status and maps it directly to an HTTP response, with no
+
+try/catch or global exception handler involved. See §5 for the full Result contract.
+
+
+
+For `POST /shorten`, in order:
 
 1\. \*\*Validate\*\* the submitted URL (well-formed, has scheme + host). Reject early with a
 
@@ -332,11 +344,17 @@ Concrete implementation using \*\*two `ConcurrentHashMap`s\*\*:
 
 &#x20; another and checks again. This is a `while (exists) { regenerate }` loop with a
 
-&#x20; small sanity-capped retry count (e.g. abort after N retries as a defensive measure
+&#x20; \*\*hard cap of 5 retries\*\* as a defensive measure against a pathological/misconfigured
 
-&#x20; against a pathological/misconfigured generator — not expected to ever trigger at
+&#x20; generator. If all 5 attempts collide (probability so close to zero it is not
 
-&#x20; this scale).
+&#x20; expected to ever trigger at this scale — see calculation below), the service returns
+
+&#x20; `ServiceResult.Status.GENERATION\_FAILED`, which the controller maps to `500 Internal
+
+&#x20; Server Error`. This cap exists purely as a defensive backstop, not because collisions
+
+&#x20; are anticipated.
 
 \- This means the claim isn't "collisions are statistically unlikely" — it's
 
@@ -398,25 +416,43 @@ Concrete implementation using \*\*two `ConcurrentHashMap`s\*\*:
 
 
 
-A single `@ControllerAdvice` (Spring's global exception handler) will translate
+\*\*Result-object pattern, not exceptions.\*\* Every `UrlShortenerService` method returns a
 
-service-layer outcomes / exceptions into consistent JSON error responses, so the
+generic `ServiceResult<T>` (status enum + optional data + message) instead of throwing.
 
-controller methods themselves stay free of try/catch noise:
+The Controller inspects `result.getStatus()` and maps it directly to an HTTP response
+
+via a `switch`. This keeps the failure paths as ordinary, traceable control flow rather
+
+than exception-driven control flow, and avoids a global exception handler entirely —
+
+there's nothing to intercept because nothing is thrown for expected business outcomes.
 
 
 
-| Condition | HTTP Status | Triggered by |
+(Genuine unexpected errors — e.g. a bug causing a `NullPointerException` — are not
+
+business outcomes and are not wrapped in `ServiceResult`; Spring's default error
+
+handling covers those as a true exceptional case, separate from this contract.)
+
+
+
+| Result Status | HTTP Status | Returned by |
 
 |---|---|---|
 
-| Malformed/invalid URL | 400 | `InvalidUrlException` |
+| `SUCCESS` | 201 (shorten) / 301 (redirect) | Both shorten and redirect happy paths |
 
-| Invalid alias characters or length | 400 | `InvalidAliasException` |
+| `INVALID\_URL` | 400 | Malformed/invalid URL on shorten |
 
-| Alias already taken | 409 | `AliasConflictException` |
+| `INVALID\_ALIAS` | 400 | Invalid alias characters or length |
 
-| Code not found on redirect | 404 | `CodeNotFoundException` |
+| `ALIAS\_CONFLICT` | 409 | Alias already taken |
+
+| `NOT\_FOUND` | 404 | Unknown code on redirect |
+
+| `GENERATION\_FAILED` | 500 | Defensive: code generator exhausted its retry cap (see §4.1) |
 
 
 
@@ -436,13 +472,13 @@ controller methods themselves stay free of try/catch noise:
 
 | In-memory store | `InMemoryUrlRepository` |
 
-| Custom alias support, 409 on conflict | `UrlShortenerService` §2.2, `AliasConflictException` |
+| Custom alias support, 409 on conflict | `UrlShortenerService` §2.2, `ServiceResult.Status.ALIAS\_CONFLICT` |
 
 | Idempotent duplicate-URL handling | `UrlShortenerService` §2.2 (no-alias branch), `urlToCode` reverse index |
 
 | Collision-free short codes | `ShortCodeGenerator` + `existsByCode` retry loop, §4.1 |
 
-| 404 for unknown codes | `UrlController` + `CodeNotFoundException` |
+| 404 for unknown codes | `UrlController` + `ServiceResult.Status.NOT\_FOUND` |
 
 | URL validation (any scheme, well-formed) | `UrlShortenerService` validation step |
 
